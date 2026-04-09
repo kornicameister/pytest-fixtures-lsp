@@ -1,3 +1,4 @@
+mod cache;
 mod fixtures;
 mod runner;
 
@@ -95,12 +96,23 @@ impl LanguageServer for Backend {
         let client = self.client.clone();
 
         tokio::spawn(async move {
-            if let Some(dir) = root_dir {
-                let parsed = fixtures::collect_all(&dir).await;
-                let count = parsed.len();
-                *fixtures.write().await = parsed;
+            if let Some(ref dir) = root_dir {
+                // 1. Load from cache instantly
+                if let Some(cached) = cache::load(dir) {
+                    let count = cached.len();
+                    *fixtures.write().await = cached;
+                    client
+                        .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: {} fixtures (cached)", count))
+                        .await;
+                }
+
+                // 2. Refresh from pytest in background
+                let fresh = fixtures::collect_all(dir).await;
+                let count = fresh.len();
+                cache::save(dir, &fresh);
+                *fixtures.write().await = fresh;
                 client
-                    .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: loaded {count} fixtures"))
+                    .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: {} fixtures (refreshed)", count))
                     .await;
             }
         });
@@ -130,14 +142,21 @@ impl LanguageServer for Backend {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let path = uri_to_path(&params.text_document.uri);
         if path.ends_with("conftest.py") {
-            if let Some(dir) = self.root_dir.read().await.as_ref() {
-                let parsed = fixtures::collect_all(dir).await;
-                let count = parsed.len();
-                *self.fixtures.write().await = parsed;
-                self.client
-                    .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: reloaded {count} fixtures"))
-                    .await;
-            }
+            let root_dir = self.root_dir.read().await.clone();
+            let fixtures = self.fixtures.clone();
+            let client = self.client.clone();
+
+            tokio::spawn(async move {
+                if let Some(ref dir) = root_dir {
+                    let fresh = fixtures::collect_all(dir).await;
+                    let count = fresh.len();
+                    cache::save(dir, &fresh);
+                    *fixtures.write().await = fresh;
+                    client
+                        .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: {} fixtures (refreshed)", count))
+                        .await;
+                }
+            });
         }
     }
 

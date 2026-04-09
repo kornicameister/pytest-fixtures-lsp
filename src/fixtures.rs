@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::runner;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct Fixture {
     pub name: String,
     pub scope: String,
