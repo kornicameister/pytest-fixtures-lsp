@@ -96,7 +96,7 @@ impl LanguageServer for Backend {
 
         tokio::spawn(async move {
             if let Some(dir) = root_dir {
-                let parsed = fixtures::collect(&dir).await;
+                let parsed = fixtures::collect_all(&dir).await;
                 let count = parsed.len();
                 *fixtures.write().await = parsed;
                 client
@@ -131,7 +131,7 @@ impl LanguageServer for Backend {
         let path = uri_to_path(&params.text_document.uri);
         if path.ends_with("conftest.py") {
             if let Some(dir) = self.root_dir.read().await.as_ref() {
-                let parsed = fixtures::collect(dir).await;
+                let parsed = fixtures::collect_all(dir).await;
                 let count = parsed.len();
                 *self.fixtures.write().await = parsed;
                 self.client
@@ -166,7 +166,11 @@ impl LanguageServer for Backend {
                     label: f.name.clone(),
                     label_details: Some(CompletionItemLabelDetails {
                         detail: f.return_type.as_ref().map(|t| format!(" → {}", t)),
-                        description: Some(format!("pytest [{}]", f.scope)),
+                        description: Some(if f.source == "global" {
+                            format!("pytest [{}]", f.scope)
+                        } else {
+                            format!("pytest [{}] 📦 {}", f.scope, f.source)
+                        }),
                     }),
                     kind: Some(CompletionItemKind::EVENT),
                     detail: Some(detail),
@@ -213,7 +217,11 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let mut content = format!("**{}** `[{}]`\n\n", fixture.name, fixture.scope);
+        let mut content = format!("**{}** `[{}]`", fixture.name, fixture.scope);
+        if fixture.source != "global" {
+            content.push_str(&format!(" 📦 `{}`", fixture.source));
+        }
+        content.push_str("\n\n");
         if let Some(ref rt) = fixture.return_type {
             content.push_str(&format!("Returns: `{}`\n\n", rt));
         }

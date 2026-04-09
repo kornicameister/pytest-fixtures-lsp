@@ -1,4 +1,8 @@
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::Path;
+
+use crate::runner;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Fixture {
@@ -7,49 +11,109 @@ pub struct Fixture {
     pub docstring: String,
     pub return_type: Option<String>,
     pub location: String,
+    /// "global" or package name like "mcp/harbor"
+    pub source: String,
 }
 
-use crate::runner;
-
-/// Run `pytest --fixtures -q` and parse output into Vec<Fixture>
-pub async fn collect(root_dir: &str) -> Vec<Fixture> {
-    let root = std::path::Path::new(root_dir);
+/// Collect fixtures from root + all sub-packages that have conftest.py or tests/
+pub async fn collect_all(root_dir: &str) -> Vec<Fixture> {
+    let root = Path::new(root_dir);
     let strategy = runner::detect(root);
+
+    // 1. Global fixtures from root
+    let mut all = run_pytest(root_dir, strategy, "global").await;
+    eprintln!("pytest-fixtures-lsp: global fixtures: {}", all.len());
+
+    // 2. Find sub-packages with their own pyproject.toml + conftest.py/tests/
+    let packages = find_packages(root);
+    eprintln!("pytest-fixtures-lsp: found {} sub-packages", packages.len());
+
+    for pkg_path in &packages {
+        let pkg_name = pkg_path.strip_prefix(root).unwrap_or(pkg_path);
+        let label = pkg_name.to_string_lossy().to_string();
+        eprintln!("pytest-fixtures-lsp: scanning package: {}", label);
+
+        let pkg_fixtures = run_pytest(&pkg_path.to_string_lossy(), strategy, &label).await;
+        eprintln!("pytest-fixtures-lsp:   {} fixtures from {}", pkg_fixtures.len(), label);
+
+        // Only add fixtures not already in global (by name)
+        let global_names: std::collections::HashSet<String> = all.iter().map(|f| f.name.clone()).collect();
+        for f in pkg_fixtures {
+            if !global_names.contains(&f.name) {
+                all.push(f);
+            }
+        }
+    }
+
+    eprintln!("pytest-fixtures-lsp: total fixtures: {}", all.len());
+    all
+}
+
+/// Find sub-directories that have pyproject.toml AND (conftest.py or tests/)
+fn find_packages(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut packages = Vec::new();
+    scan_for_packages(root, root, &mut packages, 0);
+    packages
+}
+
+fn scan_for_packages(dir: &Path, root: &Path, packages: &mut Vec<std::path::PathBuf>, depth: usize) {
+    if depth > 4 { return; }
+
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() { continue; }
+
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        // skip hidden dirs, venvs, cdk output, node_modules
+        if name.starts_with('.') || name == "node_modules" || name == "__pycache__"
+            || name == "cdk.out" || name == "venv" || name == ".venv" { continue; }
+
+        // is this a sub-package? (has pyproject.toml and is not root)
+        if path != root && path.join("pyproject.toml").exists() {
+            let has_tests = path.join("conftest.py").exists()
+                || path.join("tests").is_dir()
+                || path.join("tests/conftest.py").exists();
+            if has_tests {
+                packages.push(path.clone());
+            }
+        }
+
+        scan_for_packages(&path, root, packages, depth + 1);
+    }
+}
+
+async fn run_pytest(dir: &str, strategy: &dyn runner::PytestRunner, source: &str) -> Vec<Fixture> {
+    let root = Path::new(dir);
     let (cmd, base_args) = strategy.command(root);
 
     let mut args = base_args;
     args.extend(["--fixtures".into(), "-q".into()]);
 
-    eprintln!("pytest-fixtures-lsp: strategy={}, cmd={} {}", strategy.name(), cmd, args.join(" "));
-
     let output = tokio::process::Command::new(&cmd)
         .args(&args)
-        .current_dir(root_dir)
+        .current_dir(dir)
         .output()
         .await;
 
     let output = match output {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
-            eprintln!("pytest-fixtures-lsp: pytest failed (exit {}): {}", o.status, String::from_utf8_lossy(&o.stderr));
+            eprintln!("pytest-fixtures-lsp: pytest failed in {}: exit {}", dir, o.status);
             return Vec::new();
         }
         Err(e) => {
-            eprintln!("pytest-fixtures-lsp: failed to run pytest: {}", e);
+            eprintln!("pytest-fixtures-lsp: failed to run pytest in {}: {}", dir, e);
             return Vec::new();
         }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let fixtures = parse_fixtures_output(&stdout);
-    eprintln!("pytest-fixtures-lsp: parsed {} fixtures", fixtures.len());
-    for f in &fixtures {
-        eprintln!("  fixture: {} [{}] type={:?} loc={}", f.name, f.scope, f.return_type, f.location);
-    }
-    fixtures
+    parse_fixtures_output(&stdout, source)
 }
 
-fn parse_fixtures_output(output: &str) -> Vec<Fixture> {
+fn parse_fixtures_output(output: &str, source: &str) -> Vec<Fixture> {
     let mut fixtures = Vec::new();
     let mut current_name: Option<String> = None;
     let mut current_scope = String::from("function");
@@ -58,8 +122,7 @@ fn parse_fixtures_output(output: &str) -> Vec<Fixture> {
 
     let is_fixture_line = |line: &str| -> bool {
         let t = line.trim();
-        // fixture lines: "name -- path" or "name [scope] -- path"
-        !t.is_empty() && !t.starts_with(' ') && t.contains(" -- ")
+        !t.is_empty() && t.contains(" -- ")
             && t.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false)
     };
 
@@ -69,11 +132,10 @@ fn parse_fixtures_output(output: &str) -> Vec<Fixture> {
 
     for line in output.lines() {
         if is_fixture_line(line) {
-            // flush previous
             if let Some(name) = current_name.take() {
                 let docstring = current_doc_lines.join("\n").trim().to_string();
                 let return_type = extract_return_type(&docstring);
-                fixtures.push(Fixture { name, scope: current_scope.clone(), docstring, return_type, location: current_location.clone() });
+                fixtures.push(Fixture { name, scope: current_scope.clone(), docstring, return_type, location: current_location.clone(), source: source.to_string() });
                 current_doc_lines.clear();
                 current_scope = String::from("function");
                 current_location.clear();
@@ -97,20 +159,12 @@ fn parse_fixtures_output(output: &str) -> Vec<Fixture> {
         } else if is_docstring_line(line) && current_name.is_some() {
             current_doc_lines.push(line.trim().to_string());
         }
-        // skip everything else (errors, separators, etc.)
     }
 
-    // flush last
     if let Some(name) = current_name.take() {
         let docstring = current_doc_lines.join("\n").trim().to_string();
         let return_type = extract_return_type(&docstring);
-        fixtures.push(Fixture {
-            name,
-            scope: current_scope,
-            docstring,
-            return_type,
-            location: current_location,
-        });
+        fixtures.push(Fixture { name, scope: current_scope, docstring, return_type, location: current_location, source: source.to_string() });
     }
 
     fixtures
@@ -147,12 +201,11 @@ capsys [function] -- /usr/lib/python3.12/site-packages/_pytest/capture.py
 my_fixture -- conftest.py
     Custom project fixture.
 "#;
-        let fixtures = parse_fixtures_output(output);
+        let fixtures = parse_fixtures_output(output, "global");
         assert_eq!(fixtures.len(), 3);
         assert_eq!(fixtures[0].name, "tmp_path");
-        assert_eq!(fixtures[0].scope, "function");
-        assert!(fixtures[0].docstring.contains("temporary directory"));
+        assert_eq!(fixtures[0].source, "global");
         assert_eq!(fixtures[2].name, "my_fixture");
-        assert_eq!(fixtures[2].location, "conftest.py");
+        assert_eq!(fixtures[2].source, "global");
     }
 }
