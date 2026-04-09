@@ -42,6 +42,22 @@ impl Backend {
         None
     }
 
+    async fn refresh_fixtures(&self) {
+        let root_dir = self.root_dir.read().await.clone();
+        let fixtures = self.fixtures.clone();
+        let client = self.client.clone();
+
+        tokio::spawn(async move {
+            if let Some(ref dir) = root_dir {
+                fixtures::collect_all(dir, &fixtures).await;
+                let count = fixtures.read().await.len();
+                client
+                    .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: {} fixtures (refreshed)", count))
+                    .await;
+            }
+        });
+    }
+
     fn word_at(line: &str, col: usize) -> &str {
         let bytes = line.as_bytes();
         let start = (0..col)
@@ -84,6 +100,23 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _params: InitializedParams) {
+        // Register file watchers
+        let watchers = vec![
+            FileSystemWatcher { glob_pattern: GlobPattern::String("**/conftest.py".into()), kind: Some(WatchKind::all()) },
+            FileSystemWatcher { glob_pattern: GlobPattern::String("**/pyproject.toml".into()), kind: Some(WatchKind::all()) },
+            FileSystemWatcher { glob_pattern: GlobPattern::String("uv.lock".into()), kind: Some(WatchKind::all()) },
+            FileSystemWatcher { glob_pattern: GlobPattern::String("poetry.lock".into()), kind: Some(WatchKind::all()) },
+            FileSystemWatcher { glob_pattern: GlobPattern::String("Pipfile.lock".into()), kind: Some(WatchKind::all()) },
+        ];
+        let reg = Registration {
+            id: "pytest-fixtures-watcher".into(),
+            method: "workspace/didChangeWatchedFiles".into(),
+            register_options: Some(
+                serde_json::to_value(DidChangeWatchedFilesRegistrationOptions { watchers }).unwrap(),
+            ),
+        };
+        let _ = self.client.register_capability(vec![reg]).await;
+
         let root_dir = self.root_dir.read().await.clone();
         let fixtures = self.fixtures.clone();
         let client = self.client.clone();
@@ -134,19 +167,19 @@ impl LanguageServer for Backend {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let path = uri_to_path(&params.text_document.uri);
         if path.ends_with("conftest.py") {
-            let root_dir = self.root_dir.read().await.clone();
-            let fixtures = self.fixtures.clone();
-            let client = self.client.clone();
+            self.refresh_fixtures().await;
+        }
+    }
 
-            tokio::spawn(async move {
-                if let Some(ref dir) = root_dir {
-                    fixtures::collect_all(dir, &fixtures).await;
-                    let count = fixtures.read().await.len();
-                    client
-                        .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: {} fixtures (refreshed)", count))
-                        .await;
-                }
-            });
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let dominated = params.changes.iter().any(|c| {
+            let p = c.uri.as_str();
+            p.ends_with("conftest.py") || p.ends_with("pyproject.toml")
+                || p.ends_with("uv.lock") || p.ends_with("poetry.lock")
+                || p.ends_with("Pipfile.lock")
+        });
+        if dominated {
+            self.refresh_fixtures().await;
         }
     }
 
