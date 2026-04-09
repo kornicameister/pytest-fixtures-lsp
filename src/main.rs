@@ -12,7 +12,10 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use fixtures::Fixture;
 
 fn uri_to_path(uri: &Uri) -> String {
-    uri.as_str().strip_prefix("file://").unwrap_or(uri.as_str()).to_string()
+    uri.as_str()
+        .strip_prefix("file://")
+        .unwrap_or(uri.as_str())
+        .to_string()
 }
 
 #[derive(Debug)]
@@ -52,7 +55,10 @@ impl Backend {
                 fixtures::collect_all(dir, &fixtures).await;
                 let count = fixtures.read().await.len();
                 client
-                    .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: {} fixtures (refreshed)", count))
+                    .log_message(
+                        MessageType::INFO,
+                        format!("pytest-fixtures-lsp: {} fixtures (refreshed)", count),
+                    )
                     .await;
             }
         });
@@ -62,7 +68,9 @@ impl Backend {
         let bytes = line.as_bytes();
         let start = (0..col)
             .rev()
-            .take_while(|&i| i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_'))
+            .take_while(|&i| {
+                i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+            })
             .last()
             .unwrap_or(col);
         let end = (col..bytes.len())
@@ -83,10 +91,10 @@ fn parse_inline_fixtures(text: &str) -> Vec<String> {
         if trimmed.starts_with("@pytest.fixture") || trimmed.starts_with("@fixture") {
             next_is_fixture = true;
         } else if next_is_fixture && trimmed.starts_with("def ") {
-            if let Some(name) = trimmed.strip_prefix("def ") {
-                if let Some(paren) = name.find('(') {
-                    fixtures.push(name[..paren].trim().to_string());
-                }
+            if let Some(name) = trimmed.strip_prefix("def ")
+                && let Some(paren) = name.find('(')
+            {
+                fixtures.push(name[..paren].trim().to_string());
             }
             next_is_fixture = false;
         } else if !trimmed.starts_with('@') {
@@ -99,9 +107,9 @@ fn parse_inline_fixtures(text: &str) -> Vec<String> {
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         #[allow(deprecated)]
-        let root = params.root_uri.as_ref().map(|uri| uri_to_path(uri));
+        let root = params.root_uri.as_ref().map(uri_to_path);
 
-        if let Some(ref dir) = root {
+        if let Some(ref _dir) = root {
             *self.root_dir.write().await = root.clone();
         }
 
@@ -111,7 +119,11 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::FULL,
                 )),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec!["(".to_string(), ",".to_string(), " ".to_string()]),
+                    trigger_characters: Some(vec![
+                        "(".to_string(),
+                        ",".to_string(),
+                        " ".to_string(),
+                    ]),
                     ..Default::default()
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -124,17 +136,33 @@ impl LanguageServer for Backend {
     async fn initialized(&self, _params: InitializedParams) {
         // Register file watchers
         let watchers = vec![
-            FileSystemWatcher { glob_pattern: GlobPattern::String("**/conftest.py".into()), kind: Some(WatchKind::all()) },
-            FileSystemWatcher { glob_pattern: GlobPattern::String("**/pyproject.toml".into()), kind: Some(WatchKind::all()) },
-            FileSystemWatcher { glob_pattern: GlobPattern::String("uv.lock".into()), kind: Some(WatchKind::all()) },
-            FileSystemWatcher { glob_pattern: GlobPattern::String("poetry.lock".into()), kind: Some(WatchKind::all()) },
-            FileSystemWatcher { glob_pattern: GlobPattern::String("Pipfile.lock".into()), kind: Some(WatchKind::all()) },
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/conftest.py".into()),
+                kind: Some(WatchKind::all()),
+            },
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/pyproject.toml".into()),
+                kind: Some(WatchKind::all()),
+            },
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("uv.lock".into()),
+                kind: Some(WatchKind::all()),
+            },
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("poetry.lock".into()),
+                kind: Some(WatchKind::all()),
+            },
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("Pipfile.lock".into()),
+                kind: Some(WatchKind::all()),
+            },
         ];
         let reg = Registration {
             id: "pytest-fixtures-watcher".into(),
             method: "workspace/didChangeWatchedFiles".into(),
             register_options: Some(
-                serde_json::to_value(DidChangeWatchedFilesRegistrationOptions { watchers }).unwrap(),
+                serde_json::to_value(DidChangeWatchedFilesRegistrationOptions { watchers })
+                    .unwrap(),
             ),
         };
         let _ = self.client.register_capability(vec![reg]).await;
@@ -151,7 +179,10 @@ impl LanguageServer for Backend {
                     let count = cached.len();
                     *fixtures.write().await = cached;
                     client
-                        .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: {} fixtures (cached)", count))
+                        .log_message(
+                            MessageType::INFO,
+                            format!("pytest-fixtures-lsp: {} fixtures (cached)", count),
+                        )
                         .await;
                 }
 
@@ -159,7 +190,10 @@ impl LanguageServer for Backend {
                 fixtures::collect_all(dir, &fixtures).await;
                 let count = fixtures.read().await.len();
                 client
-                    .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: {} fixtures (refreshed)", count))
+                    .log_message(
+                        MessageType::INFO,
+                        format!("pytest-fixtures-lsp: {} fixtures (refreshed)", count),
+                    )
                     .await;
             }
         });
@@ -171,7 +205,10 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let key = uri_to_path(&params.text_document.uri);
-        self.documents.write().await.insert(key, params.text_document.text);
+        self.documents
+            .write()
+            .await
+            .insert(key, params.text_document.text);
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -196,8 +233,10 @@ impl LanguageServer for Backend {
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         let dominated = params.changes.iter().any(|c| {
             let p = c.uri.as_str();
-            p.ends_with("conftest.py") || p.ends_with("pyproject.toml")
-                || p.ends_with("uv.lock") || p.ends_with("poetry.lock")
+            p.ends_with("conftest.py")
+                || p.ends_with("pyproject.toml")
+                || p.ends_with("uv.lock")
+                || p.ends_with("poetry.lock")
                 || p.ends_with("Pipfile.lock")
         });
         if dominated {
@@ -211,25 +250,42 @@ impl LanguageServer for Backend {
 
         let filename = path.rsplit('/').next().unwrap_or("");
         if !filename.starts_with("test_") && !filename.ends_with("_test.py") {
-            eprintln!("pytest-fixtures-lsp: skip completion, not a test file: {}", filename);
+            eprintln!(
+                "pytest-fixtures-lsp: skip completion, not a test file: {}",
+                filename
+            );
             return Ok(None);
         }
 
         let fixtures = self.fixtures.read().await;
-        eprintln!("pytest-fixtures-lsp: completion requested, {} fixtures available", fixtures.len());
+        eprintln!(
+            "pytest-fixtures-lsp: completion requested, {} fixtures available",
+            fixtures.len()
+        );
 
         // Filter: show global + fixtures from the same package + inline fixtures from current file
         let file_pkg = self.file_package(&path).await;
 
         // Parse inline fixtures from current buffer
         let docs = self.documents.read().await;
-        let inline = docs.get(&path).map(|text| parse_inline_fixtures(text)).unwrap_or_default();
+        let inline = docs
+            .get(&path)
+            .map(|text| parse_inline_fixtures(text))
+            .unwrap_or_default();
 
         let mut items: Vec<CompletionItem> = fixtures
             .iter()
             .filter(|f| f.source == "global" || Some(&f.source) == file_pkg.as_ref())
             .map(|f| {
-                let detail = format!("pytest [{}][{}]", f.scope, if f.source == "global" { "global" } else { "local" });
+                let detail = format!(
+                    "pytest [{}][{}]",
+                    f.scope,
+                    if f.source == "global" {
+                        "global"
+                    } else {
+                        "local"
+                    }
+                );
                 CompletionItem {
                     label: f.name.clone(),
                     label_details: Some(CompletionItemLabelDetails {
@@ -240,7 +296,11 @@ impl LanguageServer for Backend {
                     detail: Some(detail),
                     insert_text: None,
                     insert_text_format: None,
-                    sort_text: Some(format!("{}0{}", if f.source == "global" { "c" } else { "b" }, f.name)),
+                    sort_text: Some(format!(
+                        "{}0{}",
+                        if f.source == "global" { "c" } else { "b" },
+                        f.name
+                    )),
                     documentation: if f.docstring.is_empty() {
                         None
                     } else {
@@ -255,7 +315,8 @@ impl LanguageServer for Backend {
             .collect();
 
         // Add inline fixtures from current file
-        let existing: std::collections::HashSet<String> = items.iter().map(|i| i.label.clone()).collect();
+        let existing: std::collections::HashSet<String> =
+            items.iter().map(|i| i.label.clone()).collect();
         for name in &inline {
             if !existing.contains(name) {
                 items.push(CompletionItem {

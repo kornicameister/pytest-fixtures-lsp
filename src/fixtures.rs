@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::HashMap;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,10 +17,7 @@ pub struct Fixture {
 }
 
 /// Collect fixtures from root + all sub-packages, updating shared state incrementally
-pub async fn collect_all(
-    root_dir: &str,
-    fixtures: &Arc<tokio::sync::RwLock<Vec<Fixture>>>,
-) {
+pub async fn collect_all(root_dir: &str, fixtures: &Arc<tokio::sync::RwLock<Vec<Fixture>>>) {
     let root = Path::new(root_dir);
     let strategy = runner::detect(root);
 
@@ -42,12 +39,17 @@ pub async fn collect_all(
         eprintln!("pytest-fixtures-lsp: scanning package: {}", label);
 
         let pkg_fixtures = run_pytest(&pkg_path.to_string_lossy(), strategy, &label).await;
-        eprintln!("pytest-fixtures-lsp:   {} fixtures from {}", pkg_fixtures.len(), label);
+        eprintln!(
+            "pytest-fixtures-lsp:   {} fixtures from {}",
+            pkg_fixtures.len(),
+            label
+        );
 
         if !pkg_fixtures.is_empty() {
             crate::cache::save(root_dir, &label, &pkg_fixtures);
             let mut all = fixtures.write().await;
-            let existing: std::collections::HashSet<String> = all.iter().map(|f| f.name.clone()).collect();
+            let existing: std::collections::HashSet<String> =
+                all.iter().map(|f| f.name.clone()).collect();
             for f in pkg_fixtures {
                 if !existing.contains(&f.name) {
                     all.push(f);
@@ -57,7 +59,10 @@ pub async fn collect_all(
         }
     }
 
-    eprintln!("pytest-fixtures-lsp: total fixtures: {}", fixtures.read().await.len());
+    eprintln!(
+        "pytest-fixtures-lsp: total fixtures: {}",
+        fixtures.read().await.len()
+    );
 }
 
 /// Find sub-directories that have pyproject.toml AND (conftest.py or tests/)
@@ -67,19 +72,37 @@ fn find_packages(root: &Path) -> Vec<std::path::PathBuf> {
     packages
 }
 
-fn scan_for_packages(dir: &Path, root: &Path, packages: &mut Vec<std::path::PathBuf>, depth: usize) {
-    if depth > 4 { return; }
+fn scan_for_packages(
+    dir: &Path,
+    root: &Path,
+    packages: &mut Vec<std::path::PathBuf>,
+    depth: usize,
+) {
+    if depth > 4 {
+        return;
+    }
 
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() { continue; }
+        if !path.is_dir() {
+            continue;
+        }
 
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         // skip hidden dirs, venvs, cdk output, node_modules
-        if name.starts_with('.') || name == "node_modules" || name == "__pycache__"
-            || name == "cdk.out" || name == "venv" || name == ".venv" { continue; }
+        if name.starts_with('.')
+            || name == "node_modules"
+            || name == "__pycache__"
+            || name == "cdk.out"
+            || name == "venv"
+            || name == ".venv"
+        {
+            continue;
+        }
 
         // is this a sub-package? (has pyproject.toml and is not root)
         if path != root && path.join("pyproject.toml").exists() {
@@ -111,11 +134,17 @@ async fn run_pytest(dir: &str, strategy: &dyn runner::PytestRunner, source: &str
     let output = match output {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
-            eprintln!("pytest-fixtures-lsp: pytest failed in {}: exit {}", dir, o.status);
+            eprintln!(
+                "pytest-fixtures-lsp: pytest failed in {}: exit {}",
+                dir, o.status
+            );
             return Vec::new();
         }
         Err(e) => {
-            eprintln!("pytest-fixtures-lsp: failed to run pytest in {}: {}", dir, e);
+            eprintln!(
+                "pytest-fixtures-lsp: failed to run pytest in {}: {}",
+                dir, e
+            );
             return Vec::new();
         }
     };
@@ -133,20 +162,30 @@ fn parse_fixtures_output(output: &str, source: &str) -> Vec<Fixture> {
 
     let is_fixture_line = |line: &str| -> bool {
         let t = line.trim();
-        !t.is_empty() && t.contains(" -- ")
-            && t.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false)
+        !t.is_empty()
+            && t.contains(" -- ")
+            && t.chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic() || c == '_')
+                .unwrap_or(false)
     };
 
-    let is_docstring_line = |line: &str| -> bool {
-        line.starts_with("    ") || line.starts_with('\t')
-    };
+    let is_docstring_line =
+        |line: &str| -> bool { line.starts_with("    ") || line.starts_with('\t') };
 
     for line in output.lines() {
         if is_fixture_line(line) {
             if let Some(name) = current_name.take() {
                 let docstring = current_doc_lines.join("\n").trim().to_string();
                 let return_type = extract_return_type(&docstring);
-                fixtures.push(Fixture { name, scope: current_scope.clone(), docstring, return_type, location: current_location.clone(), source: source.to_string() });
+                fixtures.push(Fixture {
+                    name,
+                    scope: current_scope.clone(),
+                    docstring,
+                    return_type,
+                    location: current_location.clone(),
+                    source: source.to_string(),
+                });
                 current_doc_lines.clear();
                 current_scope = String::from("function");
                 current_location.clear();
@@ -177,7 +216,14 @@ fn parse_fixtures_output(output: &str, source: &str) -> Vec<Fixture> {
     if let Some(name) = current_name.take() {
         let docstring = current_doc_lines.join("\n").trim().to_string();
         let return_type = extract_return_type(&docstring);
-        fixtures.push(Fixture { name, scope: current_scope, docstring, return_type, location: current_location, source: source.to_string() });
+        fixtures.push(Fixture {
+            name,
+            scope: current_scope,
+            docstring,
+            return_type,
+            location: current_location,
+            source: source.to_string(),
+        });
     }
 
     fixtures
@@ -186,12 +232,12 @@ fn parse_fixtures_output(output: &str, source: &str) -> Vec<Fixture> {
 fn extract_return_type(docstring: &str) -> Option<String> {
     for line in docstring.lines() {
         let trimmed = line.trim().to_lowercase();
-        if trimmed.starts_with("returns") || trimmed.starts_with("return type") {
-            if let Some((_prefix, type_part)) = line.split_once(':') {
-                let t = type_part.trim().to_string();
-                if !t.is_empty() {
-                    return Some(t);
-                }
+        if (trimmed.starts_with("returns") || trimmed.starts_with("return type"))
+            && let Some((_prefix, type_part)) = line.split_once(':')
+        {
+            let t = type_part.trim().to_string();
+            if !t.is_empty() {
+                return Some(t);
             }
         }
     }

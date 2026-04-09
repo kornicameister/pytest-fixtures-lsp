@@ -2,6 +2,7 @@ use std::path::Path;
 
 /// Strategy for running pytest in different project types.
 pub trait PytestRunner: Send + Sync {
+    #[allow(dead_code)]
     fn name(&self) -> &'static str;
     fn detect(&self, root_dir: &Path) -> bool;
     fn command(&self, root_dir: &Path) -> (String, Vec<String>);
@@ -14,7 +15,9 @@ pub struct VenvRunner;
 pub struct SystemRunner;
 
 impl PytestRunner for UvRunner {
-    fn name(&self) -> &'static str { "uv" }
+    fn name(&self) -> &'static str {
+        "uv"
+    }
     fn detect(&self, root_dir: &Path) -> bool {
         root_dir.join("uv.lock").exists()
     }
@@ -24,7 +27,9 @@ impl PytestRunner for UvRunner {
 }
 
 impl PytestRunner for PoetryRunner {
-    fn name(&self) -> &'static str { "poetry" }
+    fn name(&self) -> &'static str {
+        "poetry"
+    }
     fn detect(&self, root_dir: &Path) -> bool {
         root_dir.join("poetry.lock").exists()
     }
@@ -34,7 +39,9 @@ impl PytestRunner for PoetryRunner {
 }
 
 impl PytestRunner for PipenvRunner {
-    fn name(&self) -> &'static str { "pipenv" }
+    fn name(&self) -> &'static str {
+        "pipenv"
+    }
     fn detect(&self, root_dir: &Path) -> bool {
         root_dir.join("Pipfile.lock").exists()
     }
@@ -44,7 +51,9 @@ impl PytestRunner for PipenvRunner {
 }
 
 impl PytestRunner for VenvRunner {
-    fn name(&self) -> &'static str { "venv" }
+    fn name(&self) -> &'static str {
+        "venv"
+    }
     fn detect(&self, root_dir: &Path) -> bool {
         root_dir.join(".venv/bin/pytest").exists() || root_dir.join("venv/bin/pytest").exists()
     }
@@ -59,8 +68,12 @@ impl PytestRunner for VenvRunner {
 }
 
 impl PytestRunner for SystemRunner {
-    fn name(&self) -> &'static str { "system" }
-    fn detect(&self, _root_dir: &Path) -> bool { true }
+    fn name(&self) -> &'static str {
+        "system"
+    }
+    fn detect(&self, _root_dir: &Path) -> bool {
+        true
+    }
     fn command(&self, _root_dir: &Path) -> (String, Vec<String>) {
         ("pytest".into(), vec![])
     }
@@ -76,5 +89,9 @@ pub fn detect(root_dir: &Path) -> &'static dyn PytestRunner {
         &VenvRunner,
         &SystemRunner,
     ];
-    RUNNERS.iter().find(|r| r.detect(root_dir)).copied().unwrap()
+    RUNNERS
+        .iter()
+        .find(|r| r.detect(root_dir))
+        .copied()
+        .unwrap()
 }

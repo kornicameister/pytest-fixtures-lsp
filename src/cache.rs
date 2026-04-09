@@ -42,19 +42,21 @@ pub fn load_all(root_dir: &str) -> Vec<Fixture> {
         let path = entry.path();
         if path.extension().map(|e| e == "json").unwrap_or(false)
             && path.file_stem().map(|s| s != "global").unwrap_or(true)
+            && let Some(fixtures) = load_file(&path)
         {
-            if let Some(fixtures) = load_file(&path) {
-                for f in fixtures {
-                    if seen.insert(f.name.clone()) {
-                        all.push(f);
-                    }
+            for f in fixtures {
+                if seen.insert(f.name.clone()) {
+                    all.push(f);
                 }
             }
         }
     }
 
     if !all.is_empty() {
-        eprintln!("pytest-fixtures-lsp: loaded {} fixtures from cache", all.len());
+        eprintln!(
+            "pytest-fixtures-lsp: loaded {} fixtures from cache",
+            all.len()
+        );
     }
     all
 }
@@ -73,7 +75,11 @@ pub fn save(root_dir: &str, source: &str, fixtures: &[Fixture]) {
     let path = dir.join(filename);
     if let Ok(data) = serde_json::to_string(fixtures) {
         let _ = std::fs::write(&path, data);
-        eprintln!("pytest-fixtures-lsp: cached {} fixtures for '{}'", fixtures.len(), source);
+        eprintln!(
+            "pytest-fixtures-lsp: cached {} fixtures for '{}'",
+            fixtures.len(),
+            source
+        );
     }
 }
 
