@@ -6,9 +6,13 @@ Built in Rust with [tower-lsp-server](https://github.com/tower-lsp-community/tow
 
 ## Features
 
-- **Completion** — suggests available pytest fixtures when typing function parameters in `test_*.py` / `*_test.py` files
+- **Completion** — suggests available pytest fixtures in `test_*.py` / `*_test.py` files
 - **Hover** — shows fixture scope, return type, docstring, and source location
-- **Auto-refresh** — reloads fixtures when `conftest.py` is saved
+- **Multi-source discovery** — fixtures from global venv, local packages, and inline `@pytest.fixture` in current file
+- **Package-scoped filtering** — only shows fixtures relevant to the current package (global + local + file)
+- **Auto-refresh** — watches `conftest.py`, `pyproject.toml`, and lock files for changes
+- **Disk cache** — instant startup from cache, background refresh
+- **Project type detection** — supports uv, poetry, pipenv, venv, and system pytest
 
 ## Architecture
 
@@ -17,47 +21,74 @@ sequenceDiagram
     participant Editor as Neovim / Editor
     participant LSP as pytest-fixtures-lsp
     participant Pytest as pytest CLI
+    participant Cache as ~/.cache/
 
     Editor->>LSP: initialize (root_uri)
-    LSP->>Pytest: pytest --fixtures -q
-    Pytest-->>LSP: fixture list (stdout)
-    LSP-->>Editor: capabilities (completion, hover)
+    LSP->>Cache: load cached fixtures (instant)
+    LSP-->>Editor: capabilities + cached fixtures ready
 
-    Editor->>LSP: textDocument/didOpen
+    LSP->>Pytest: pytest --fixtures -q (global)
+    Pytest-->>LSP: fixture list
+    LSP->>Cache: save global.json
+    LSP-->>Editor: global fixtures available
+
+    LSP->>Pytest: pytest --fixtures -q (per package)
+    Pytest-->>LSP: package fixtures
+    LSP->>Cache: save <package-hash>.json
+    LSP-->>Editor: package fixtures available
+
     Editor->>LSP: textDocument/completion
-    Note over LSP: cursor in def test_*(▌) ?
-    LSP-->>Editor: fixture names + types
+    Note over LSP: filter by: file > local > global
+    LSP-->>Editor: fixture names + scope + source
 
-    Editor->>LSP: textDocument/hover
-    LSP-->>Editor: fixture docstring + scope
-
-    Editor->>LSP: textDocument/didSave (conftest.py)
-    LSP->>Pytest: pytest --fixtures -q
-    Note over LSP: cache refreshed
+    Editor->>LSP: workspace/didChangeWatchedFiles
+    Note over LSP: conftest.py / pyproject.toml / lock file changed
+    LSP->>Pytest: refresh fixtures async
 ```
 
-## How it works
+## Fixture Sources
 
 ```mermaid
 flowchart LR
-    A[pytest --fixtures -q] --> B[Parse output]
-    B --> C[Cache Vec of Fixture]
-    C --> D{Request type?}
-    D -->|completion| E[Filter: test file + inside params]
-    D -->|hover| F[Match word to fixture name]
-    E --> G[Return fixture names with types]
-    F --> H[Return docstring + scope + location]
+    A["@pytest.fixture<br/>in current file"] -->|file| D[Completion]
+    B["conftest.py<br/>in package"] -->|local| D
+    C["venv plugins<br/>+ root conftest"] -->|global| D
+    D --> E{Filter by package}
+    E --> F["Show only relevant<br/>fixtures"]
 ```
 
-Each `Fixture` contains:
+| Source | How detected | Label | Priority |
+|--------|-------------|-------|----------|
+| **file** | `@pytest.fixture` in current buffer | `pytest [function][file]` | highest |
+| **local** | `pytest --fixtures` from sub-package | `pytest [scope][local]` | medium |
+| **global** | `pytest --fixtures` from project root | `pytest [scope][global]` | lowest |
 
-| Field | Source |
-|-------|--------|
-| `name` | fixture function name |
-| `scope` | `function`, `class`, `module`, `session` |
-| `return_type` | extracted from docstring (if annotated) |
-| `docstring` | indented lines after fixture header |
-| `location` | file path from pytest output |
+## Project Type Detection
+
+| Strategy | Marker | Command |
+|----------|--------|---------|
+| uv | `uv.lock` | `uv run pytest --fixtures -q` |
+| poetry | `poetry.lock` | `poetry run pytest --fixtures -q` |
+| pipenv | `Pipfile.lock` | `pipenv run pytest --fixtures -q` |
+| venv | `.venv/bin/pytest` | direct execution |
+| system | fallback | `pytest --fixtures -q` |
+
+Detection priority: uv → poetry → pipenv → venv → system.
+
+## Cache Structure
+
+```
+~/.cache/pytest-fixtures-lsp/
+  └── <project-hash>/
+      ├── global.json           # fixtures from project root
+      ├── <pkg-hash-1>.json     # fixtures from sub-package 1
+      └── <pkg-hash-2>.json     # fixtures from sub-package 2
+```
+
+- Per-source files — no race conditions on writes
+- Loaded on startup for instant completion
+- Refreshed in background after startup
+- Updated on `conftest.py` / `pyproject.toml` / lock file changes
 
 ## Installation
 
@@ -65,34 +96,48 @@ Each `Fixture` contains:
 
 ```bash
 cargo install --path .
+# or
+cargo build --release
+cp target/release/pytest-fixtures-lsp ~/.local/bin/
 ```
 
-Or download a release binary (coming soon).
+### Download release binary
+
+Check [Releases](https://github.com/kornicameister/pytest-fixtures-lsp/releases) for pre-built binaries (linux-x64, macos-arm64, macos-x64).
 
 ### Neovim setup
 
-Add to your LSP config (`after/lsp/pytest_fixtures.lua`):
+`after/lsp/pytest_fixtures.lua`:
 
 ```lua
 return {
   cmd = { 'pytest-fixtures-lsp' },
   filetypes = { 'python' },
   root_dir = function(bufnr, on_dir)
-    local root = vim.fs.root(bufnr, { 'pyproject.toml', 'setup.py', 'conftest.py' })
+    local root = vim.fs.root(bufnr, { 'uv.lock', '.venv', 'pyproject.toml', 'setup.py' })
     if root then on_dir(root) end
   end,
 }
 ```
 
-Enable it:
+Enable it in your LSP config:
 
 ```lua
 vim.lsp.enable('pytest_fixtures')
 ```
 
+## File Watching
+
+The server automatically watches for changes to:
+- `**/conftest.py` — new/modified fixture definitions
+- `**/pyproject.toml` — dependency changes
+- `uv.lock` / `poetry.lock` / `Pipfile.lock` — installed packages
+
+Changes trigger an async fixture refresh + cache update.
+
 ## Requirements
 
-- `pytest` available in `PATH` (or in your project's virtualenv)
+- `pytest` available via your project's package manager (uv, poetry, etc.) or in PATH
 - Rust toolchain (for building from source)
 
 ## License
