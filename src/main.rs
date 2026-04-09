@@ -74,6 +74,28 @@ impl Backend {
     }
 }
 
+/// Parse @pytest.fixture decorated functions from buffer text
+fn parse_inline_fixtures(text: &str) -> Vec<String> {
+    let mut fixtures = Vec::new();
+    let mut next_is_fixture = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("@pytest.fixture") || trimmed.starts_with("@fixture") {
+            next_is_fixture = true;
+        } else if next_is_fixture && trimmed.starts_with("def ") {
+            if let Some(name) = trimmed.strip_prefix("def ") {
+                if let Some(paren) = name.find('(') {
+                    fixtures.push(name[..paren].trim().to_string());
+                }
+            }
+            next_is_fixture = false;
+        } else if !trimmed.starts_with('@') {
+            next_is_fixture = false;
+        }
+    }
+    fixtures
+}
+
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         #[allow(deprecated)]
@@ -196,10 +218,14 @@ impl LanguageServer for Backend {
         let fixtures = self.fixtures.read().await;
         eprintln!("pytest-fixtures-lsp: completion requested, {} fixtures available", fixtures.len());
 
-        // Filter: show global + fixtures from the same package
+        // Filter: show global + fixtures from the same package + inline fixtures from current file
         let file_pkg = self.file_package(&path).await;
 
-        let items: Vec<CompletionItem> = fixtures
+        // Parse inline fixtures from current buffer
+        let docs = self.documents.read().await;
+        let inline = docs.get(&path).map(|text| parse_inline_fixtures(text)).unwrap_or_default();
+
+        let mut items: Vec<CompletionItem> = fixtures
             .iter()
             .filter(|f| f.source == "global" || Some(&f.source) == file_pkg.as_ref())
             .map(|f| {
@@ -227,6 +253,24 @@ impl LanguageServer for Backend {
                 }
             })
             .collect();
+
+        // Add inline fixtures from current file
+        let existing: std::collections::HashSet<String> = items.iter().map(|i| i.label.clone()).collect();
+        for name in &inline {
+            if !existing.contains(name) {
+                items.push(CompletionItem {
+                    label: name.clone(),
+                    label_details: Some(CompletionItemLabelDetails {
+                        detail: None,
+                        description: Some("pytest [function][file]".into()),
+                    }),
+                    kind: Some(CompletionItemKind::INTERFACE),
+                    detail: Some("pytest [function][file]".into()),
+                    sort_text: Some(format!("a0{}", name)),
+                    ..Default::default()
+                });
+            }
+        }
 
         Ok(Some(CompletionResponse::Array(items)))
     }
