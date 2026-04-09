@@ -161,7 +161,9 @@ fn parse_fixtures_output(output: &str, source: &str) -> Vec<Fixture> {
             if let Some(bracket_start) = name_part.find('[') {
                 current_name = Some(name_part[..bracket_start].trim().to_string());
                 if let Some(bracket_end) = name_part.find(']') {
-                    current_scope = name_part[bracket_start + 1..bracket_end].to_string();
+                    current_scope = name_part[bracket_start + 1..bracket_end]
+                        .trim_end_matches(" scope")
+                        .to_string();
                 }
             } else {
                 current_name = Some(name_part.to_string());

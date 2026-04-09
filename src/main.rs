@@ -170,7 +170,7 @@ impl LanguageServer for Backend {
             .iter()
             .filter(|f| f.source == "global" || Some(&f.source) == file_pkg.as_ref())
             .map(|f| {
-                let detail = format!("pytest [{}][{}]", f.scope, if f.source == "global" { "global" } else { &f.source });
+                let detail = format!("pytest [{}][{}]", f.scope, if f.source == "global" { "global" } else { "local" });
                 CompletionItem {
                     label: f.name.clone(),
                     label_details: Some(CompletionItemLabelDetails {
@@ -179,9 +179,9 @@ impl LanguageServer for Backend {
                     }),
                     kind: Some(CompletionItemKind::INTERFACE),
                     detail: Some(detail),
-                    insert_text: Some(format!("{}: ${{1:{}}}", f.name, f.return_type.as_deref().unwrap_or("Any"))),
-                    insert_text_format: Some(InsertTextFormat::SNIPPET),
-                    sort_text: Some(format!("!0{}", f.name)),
+                    insert_text: None,
+                    insert_text_format: None,
+                    sort_text: Some(format!("{}0{}", if f.source == "global" { "b" } else { "a" }, f.name)),
                     documentation: if f.docstring.is_empty() {
                         None
                     } else {
