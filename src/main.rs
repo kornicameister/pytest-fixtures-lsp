@@ -98,7 +98,8 @@ impl LanguageServer for Backend {
         tokio::spawn(async move {
             if let Some(ref dir) = root_dir {
                 // 1. Load from cache instantly
-                if let Some(cached) = cache::load(dir) {
+                let cached = cache::load_all(dir);
+                if !cached.is_empty() {
                     let count = cached.len();
                     *fixtures.write().await = cached;
                     client

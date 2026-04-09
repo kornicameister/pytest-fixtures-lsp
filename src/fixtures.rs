@@ -27,10 +27,9 @@ pub async fn collect_all(
     // 1. Global fixtures
     let global = run_pytest(root_dir, strategy, "global").await;
     eprintln!("pytest-fixtures-lsp: global fixtures: {}", global.len());
+    crate::cache::save(root_dir, "global", &global);
     {
         *fixtures.write().await = global;
-        let guard = fixtures.read().await;
-        crate::cache::save(root_dir, &guard);
     }
 
     // 2. Sub-packages
@@ -46,6 +45,7 @@ pub async fn collect_all(
         eprintln!("pytest-fixtures-lsp:   {} fixtures from {}", pkg_fixtures.len(), label);
 
         if !pkg_fixtures.is_empty() {
+            crate::cache::save(root_dir, &label, &pkg_fixtures);
             let mut all = fixtures.write().await;
             let existing: std::collections::HashSet<String> = all.iter().map(|f| f.name.clone()).collect();
             for f in pkg_fixtures {
@@ -53,7 +53,6 @@ pub async fn collect_all(
                     all.push(f);
                 }
             }
-            crate::cache::save(root_dir, &all);
             drop(all);
         }
     }
