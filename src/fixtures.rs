@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::runner;
 
@@ -15,16 +16,24 @@ pub struct Fixture {
     pub source: String,
 }
 
-/// Collect fixtures from root + all sub-packages that have conftest.py or tests/
-pub async fn collect_all(root_dir: &str) -> Vec<Fixture> {
+/// Collect fixtures from root + all sub-packages, updating shared state incrementally
+pub async fn collect_all(
+    root_dir: &str,
+    fixtures: &Arc<tokio::sync::RwLock<Vec<Fixture>>>,
+) {
     let root = Path::new(root_dir);
     let strategy = runner::detect(root);
 
-    // 1. Global fixtures from root
-    let mut all = run_pytest(root_dir, strategy, "global").await;
-    eprintln!("pytest-fixtures-lsp: global fixtures: {}", all.len());
+    // 1. Global fixtures
+    let global = run_pytest(root_dir, strategy, "global").await;
+    eprintln!("pytest-fixtures-lsp: global fixtures: {}", global.len());
+    {
+        *fixtures.write().await = global;
+        let guard = fixtures.read().await;
+        crate::cache::save(root_dir, &guard);
+    }
 
-    // 2. Find sub-packages with their own pyproject.toml + conftest.py/tests/
+    // 2. Sub-packages
     let packages = find_packages(root);
     eprintln!("pytest-fixtures-lsp: found {} sub-packages", packages.len());
 
@@ -36,17 +45,20 @@ pub async fn collect_all(root_dir: &str) -> Vec<Fixture> {
         let pkg_fixtures = run_pytest(&pkg_path.to_string_lossy(), strategy, &label).await;
         eprintln!("pytest-fixtures-lsp:   {} fixtures from {}", pkg_fixtures.len(), label);
 
-        // Only add fixtures not already in global (by name)
-        let global_names: std::collections::HashSet<String> = all.iter().map(|f| f.name.clone()).collect();
-        for f in pkg_fixtures {
-            if !global_names.contains(&f.name) {
-                all.push(f);
+        if !pkg_fixtures.is_empty() {
+            let mut all = fixtures.write().await;
+            let existing: std::collections::HashSet<String> = all.iter().map(|f| f.name.clone()).collect();
+            for f in pkg_fixtures {
+                if !existing.contains(&f.name) {
+                    all.push(f);
+                }
             }
+            crate::cache::save(root_dir, &all);
+            drop(all);
         }
     }
 
-    eprintln!("pytest-fixtures-lsp: total fixtures: {}", all.len());
-    all
+    eprintln!("pytest-fixtures-lsp: total fixtures: {}", fixtures.read().await.len());
 }
 
 /// Find sub-directories that have pyproject.toml AND (conftest.py or tests/)

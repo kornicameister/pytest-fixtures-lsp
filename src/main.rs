@@ -106,11 +106,9 @@ impl LanguageServer for Backend {
                         .await;
                 }
 
-                // 2. Refresh from pytest in background
-                let fresh = fixtures::collect_all(dir).await;
-                let count = fresh.len();
-                cache::save(dir, &fresh);
-                *fixtures.write().await = fresh;
+                // 2. Refresh incrementally from pytest
+                fixtures::collect_all(dir, &fixtures).await;
+                let count = fixtures.read().await.len();
                 client
                     .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: {} fixtures (refreshed)", count))
                     .await;
@@ -148,10 +146,8 @@ impl LanguageServer for Backend {
 
             tokio::spawn(async move {
                 if let Some(ref dir) = root_dir {
-                    let fresh = fixtures::collect_all(dir).await;
-                    let count = fresh.len();
-                    cache::save(dir, &fresh);
-                    *fixtures.write().await = fresh;
+                    fixtures::collect_all(dir, &fixtures).await;
+                    let count = fixtures.read().await.len();
                     client
                         .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: {} fixtures (refreshed)", count))
                         .await;
