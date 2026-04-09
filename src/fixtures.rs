@@ -9,21 +9,44 @@ pub struct Fixture {
     pub location: String,
 }
 
+use crate::runner;
+
 /// Run `pytest --fixtures -q` and parse output into Vec<Fixture>
 pub async fn collect(root_dir: &str) -> Vec<Fixture> {
-    let output = tokio::process::Command::new("pytest")
-        .args(["--fixtures", "-q"])
+    let root = std::path::Path::new(root_dir);
+    let strategy = runner::detect(root);
+    let (cmd, base_args) = strategy.command(root);
+
+    let mut args = base_args;
+    args.extend(["--fixtures".into(), "-q".into()]);
+
+    eprintln!("pytest-fixtures-lsp: strategy={}, cmd={} {}", strategy.name(), cmd, args.join(" "));
+
+    let output = tokio::process::Command::new(&cmd)
+        .args(&args)
         .current_dir(root_dir)
         .output()
         .await;
 
     let output = match output {
-        Ok(o) => o,
-        Err(_) => return Vec::new(),
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            eprintln!("pytest-fixtures-lsp: pytest failed (exit {}): {}", o.status, String::from_utf8_lossy(&o.stderr));
+            return Vec::new();
+        }
+        Err(e) => {
+            eprintln!("pytest-fixtures-lsp: failed to run pytest: {}", e);
+            return Vec::new();
+        }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_fixtures_output(&stdout)
+    let fixtures = parse_fixtures_output(&stdout);
+    eprintln!("pytest-fixtures-lsp: parsed {} fixtures", fixtures.len());
+    for f in &fixtures {
+        eprintln!("  fixture: {} [{}] type={:?} loc={}", f.name, f.scope, f.return_type, f.location);
+    }
+    fixtures
 }
 
 fn parse_fixtures_output(output: &str) -> Vec<Fixture> {
@@ -33,52 +56,35 @@ fn parse_fixtures_output(output: &str) -> Vec<Fixture> {
     let mut current_location = String::new();
     let mut current_doc_lines: Vec<String> = Vec::new();
 
-    for line in output.lines() {
-        if line.starts_with("=") || line.starts_with("-") || line.trim().is_empty() {
-            // flush current fixture
-            if let Some(name) = current_name.take() {
-                let docstring = current_doc_lines.join("\n").trim().to_string();
-                let return_type = extract_return_type(&docstring);
-                fixtures.push(Fixture {
-                    name,
-                    scope: current_scope.clone(),
-                    docstring,
-                    return_type,
-                    location: current_location.clone(),
-                });
-                current_doc_lines.clear();
-                current_scope = String::from("function");
-                current_location.clear();
-            }
-            continue;
-        }
+    let is_fixture_line = |line: &str| -> bool {
+        let t = line.trim();
+        // fixture lines: "name -- path" or "name [scope] -- path"
+        !t.is_empty() && !t.starts_with(' ') && t.contains(" -- ")
+            && t.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false)
+    };
 
-        // fixture line: "name -- description" or "name [scope] -- description"
-        if !line.starts_with(' ') && !line.starts_with('\t') {
+    let is_docstring_line = |line: &str| -> bool {
+        line.starts_with("    ") || line.starts_with('\t')
+    };
+
+    for line in output.lines() {
+        if is_fixture_line(line) {
             // flush previous
             if let Some(name) = current_name.take() {
                 let docstring = current_doc_lines.join("\n").trim().to_string();
                 let return_type = extract_return_type(&docstring);
-                fixtures.push(Fixture {
-                    name,
-                    scope: current_scope.clone(),
-                    docstring,
-                    return_type,
-                    location: current_location.clone(),
-                });
+                fixtures.push(Fixture { name, scope: current_scope.clone(), docstring, return_type, location: current_location.clone() });
                 current_doc_lines.clear();
                 current_scope = String::from("function");
                 current_location.clear();
             }
 
-            let line = line.trim();
-            // parse "name [scope] -- location"
-            let (name_part, rest) = match line.split_once(" -- ") {
+            let trimmed = line.trim();
+            let (name_part, rest) = match trimmed.split_once(" -- ") {
                 Some((n, r)) => (n.trim(), r.trim().to_string()),
-                None => (line, String::new()),
+                None => continue,
             };
 
-            // extract scope if present: "name [scope]"
             if let Some(bracket_start) = name_part.find('[') {
                 current_name = Some(name_part[..bracket_start].trim().to_string());
                 if let Some(bracket_end) = name_part.find(']') {
@@ -88,10 +94,10 @@ fn parse_fixtures_output(output: &str) -> Vec<Fixture> {
                 current_name = Some(name_part.to_string());
             }
             current_location = rest;
-        } else if current_name.is_some() {
-            // docstring continuation line
+        } else if is_docstring_line(line) && current_name.is_some() {
             current_doc_lines.push(line.trim().to_string());
         }
+        // skip everything else (errors, separators, etc.)
     }
 
     // flush last

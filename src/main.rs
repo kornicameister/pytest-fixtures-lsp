@@ -1,4 +1,5 @@
 mod fixtures;
+mod runner;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -70,12 +71,6 @@ impl LanguageServer for Backend {
 
         if let Some(ref dir) = root {
             *self.root_dir.write().await = root.clone();
-            let parsed = fixtures::collect(dir).await;
-            let count = parsed.len();
-            *self.fixtures.write().await = parsed;
-            self.client
-                .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: loaded {count} fixtures"))
-                .await;
         }
 
         Ok(InitializeResult {
@@ -92,6 +87,23 @@ impl LanguageServer for Backend {
             },
             ..Default::default()
         })
+    }
+
+    async fn initialized(&self, _params: InitializedParams) {
+        let root_dir = self.root_dir.read().await.clone();
+        let fixtures = self.fixtures.clone();
+        let client = self.client.clone();
+
+        tokio::spawn(async move {
+            if let Some(dir) = root_dir {
+                let parsed = fixtures::collect(&dir).await;
+                let count = parsed.len();
+                *fixtures.write().await = parsed;
+                client
+                    .log_message(MessageType::INFO, format!("pytest-fixtures-lsp: loaded {count} fixtures"))
+                    .await;
+            }
+        });
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -131,22 +143,16 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
-        let pos = &params.text_document_position.position;
         let path = uri_to_path(uri);
 
         let filename = path.rsplit('/').next().unwrap_or("");
         if !filename.starts_with("test_") && !filename.ends_with("_test.py") {
+            eprintln!("pytest-fixtures-lsp: skip completion, not a test file: {}", filename);
             return Ok(None);
         }
 
-        let docs = self.documents.read().await;
-        let Some(text) = docs.get(&path) else {
-            return Ok(None);
-        };
-
-        if !Self::is_in_test_params(text, pos.line) {
-            return Ok(None);
-        }
+        let fixtures = self.fixtures.read().await;
+        eprintln!("pytest-fixtures-lsp: completion requested, {} fixtures available", fixtures.len());
 
         let fixtures = self.fixtures.read().await;
         let items: Vec<CompletionItem> = fixtures
@@ -158,8 +164,15 @@ impl LanguageServer for Backend {
                 };
                 CompletionItem {
                     label: f.name.clone(),
-                    kind: Some(CompletionItemKind::FIELD),
+                    label_details: Some(CompletionItemLabelDetails {
+                        detail: f.return_type.as_ref().map(|t| format!(" → {}", t)),
+                        description: Some(format!("pytest [{}]", f.scope)),
+                    }),
+                    kind: Some(CompletionItemKind::EVENT),
                     detail: Some(detail),
+                    insert_text: Some(format!("{}: ${{1:{}}}", f.name, f.return_type.as_deref().unwrap_or("Any"))),
+                    insert_text_format: Some(InsertTextFormat::SNIPPET),
+                    sort_text: Some(format!("!0{}", f.name)),
                     documentation: if f.docstring.is_empty() {
                         None
                     } else {
