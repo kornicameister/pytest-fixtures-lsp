@@ -24,29 +24,22 @@ struct Backend {
 }
 
 impl Backend {
-    fn is_in_test_params(text: &str, line: u32) -> bool {
-        let lines: Vec<&str> = text.lines().collect();
-        let line = line as usize;
-        if line >= lines.len() {
-            return false;
-        }
+    /// Determine which package a file belongs to based on root_dir
+    async fn file_package(&self, file_path: &str) -> Option<String> {
+        let root = self.root_dir.read().await;
+        let root = root.as_deref()?;
+        let relative = file_path.strip_prefix(root)?.trim_start_matches('/');
 
-        let trimmed = lines[line].trim_start();
-        if trimmed.starts_with("def test_") && trimmed.contains('(') {
-            return true;
-        }
-
-        for i in (0..line).rev() {
-            let l = lines[i].trim_start();
-            if l.starts_with("def test_") && l.contains('(') {
-                let from_def: String = lines[i..=line].join("\n");
-                return from_def.matches('(').count() > from_def.matches(')').count();
+        let rel_path = std::path::Path::new(relative);
+        let mut dir = rel_path.parent();
+        while let Some(d) = dir {
+            let candidate = std::path::Path::new(root).join(d).join("pyproject.toml");
+            if candidate.exists() && d != std::path::Path::new("") {
+                return Some(d.to_string_lossy().to_string());
             }
-            if l.starts_with("def ") || l.starts_with("class ") {
-                return false;
-            }
+            dir = d.parent();
         }
-        false
+        None
     }
 
     fn word_at(line: &str, col: usize) -> &str {
@@ -170,25 +163,21 @@ impl LanguageServer for Backend {
         let fixtures = self.fixtures.read().await;
         eprintln!("pytest-fixtures-lsp: completion requested, {} fixtures available", fixtures.len());
 
-        let fixtures = self.fixtures.read().await;
+        // Filter: show global + fixtures from the same package
+        let file_pkg = self.file_package(&path).await;
+
         let items: Vec<CompletionItem> = fixtures
             .iter()
+            .filter(|f| f.source == "global" || Some(&f.source) == file_pkg.as_ref())
             .map(|f| {
-                let detail = match &f.return_type {
-                    Some(t) => format!("[{}] → {}", f.scope, t),
-                    None => format!("[{}]", f.scope),
-                };
+                let detail = format!("pytest [{}][{}]", f.scope, if f.source == "global" { "global" } else { &f.source });
                 CompletionItem {
                     label: f.name.clone(),
                     label_details: Some(CompletionItemLabelDetails {
                         detail: f.return_type.as_ref().map(|t| format!(" → {}", t)),
-                        description: Some(if f.source == "global" {
-                            format!("pytest [{}]", f.scope)
-                        } else {
-                            format!("pytest [{}] 📦 {}", f.scope, f.source)
-                        }),
+                        description: Some(detail.clone()),
                     }),
-                    kind: Some(CompletionItemKind::EVENT),
+                    kind: Some(CompletionItemKind::INTERFACE),
                     detail: Some(detail),
                     insert_text: Some(format!("{}: ${{1:{}}}", f.name, f.return_type.as_deref().unwrap_or("Any"))),
                     insert_text_format: Some(InsertTextFormat::SNIPPET),
