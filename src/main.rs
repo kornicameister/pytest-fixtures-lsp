@@ -240,7 +240,7 @@ impl LanguageServer for Backend {
                     detail: Some(detail),
                     insert_text: None,
                     insert_text_format: None,
-                    sort_text: Some(format!("{}0{}", if f.source == "global" { "b" } else { "a" }, f.name)),
+                    sort_text: Some(format!("{}0{}", if f.source == "global" { "c" } else { "b" }, f.name)),
                     documentation: if f.docstring.is_empty() {
                         None
                     } else {
